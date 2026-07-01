@@ -2,6 +2,7 @@
   import QRCode from "qrcode";
   import { hub, setMode } from "../lib/hub.svelte.js";
   import { MODES, categoriesFor } from "../lib/categories.js";
+  import { patternStats } from "../lib/pilemap.js";
   import TransactionLog from "./TransactionLog.svelte";
 
   let qrDataUrl = $state("");
@@ -10,6 +11,10 @@
   });
 
   const cats = $derived(categoriesFor(hub.mode));
+  const pats = $derived(patternStats(hub.transactions, hub.mode));
+  const words = $derived(hub.mode === "move"
+    ? { killed: "let go", kept: "boxed" }
+    : { killed: "recycled", kept: "archived" });
 </script>
 
 <main class="room">
@@ -42,8 +47,8 @@
         {/each}
       </div>
       <div class="summary">
-        <span><strong>{hub.summary.killed}</strong> binned</span>
-        <span><strong>{hub.summary.kept}</strong> filed</span>
+        <span><strong>{hub.summary.killed}</strong> {words.killed}</span>
+        <span><strong>{hub.summary.kept}</strong> {words.kept}</span>
         <span class="lost">· 0 info lost</span>
       </div>
     </div>
@@ -51,6 +56,20 @@
     <section class="grid">
       <TransactionLog />
       <aside class="side">
+        {#if pats.length}
+          <div class="pats">
+            <span class="kicker">The patterns under your piles</span>
+            <div class="prows">
+              {#each pats as p (p.id)}
+                <div class="prow">
+                  <div class="ptop"><span class="pname mono">{p.id}</span><span class="ppct mono">{p.pct}%</span></div>
+                  <div class="pbar"><div class="pfill" style="width:{p.pct}%"></div></div>
+                </div>
+              {/each}
+            </div>
+            {#if pats[0]}<p class="plead">{pats[0].name} is your biggest driver. {pats[0].line}</p>{/if}
+          </div>
+        {/if}
         <div class="cats">
           <span class="kicker">Filed by destination</span>
           <div class="rows">
@@ -60,6 +79,7 @@
           </div>
         </div>
         <p class="hint">Hold the shutter on your phone and say where each item goes — "file this tax bill", "toss it". It commits instantly; undo anything here.</p>
+        <p class="quote">"Clutter is postponed decisions." <span>— Barbara Hemphill. This log is those decisions, made.</span></p>
       </aside>
     </section>
   {/if}
@@ -94,5 +114,15 @@
   .cats .rows { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
   .crow { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); }
   .hint { font-size: 12.5px; line-height: 1.5; color: var(--muted); padding: 0 4px; }
+  .pats { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px; }
+  .prows { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .ptop { display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .pname { font-size: 11px; color: var(--ochre); }
+  .ppct { font-size: 11px; color: var(--muted); }
+  .pbar { height: 6px; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .pfill { height: 100%; background: var(--ochre); }
+  .plead { font-size: 12px; line-height: 1.5; color: var(--muted); margin: 12px 0 0; }
+  .quote { font: italic 500 13px/1.5 var(--display); color: var(--ink); padding: 0 4px; }
+  .quote span { font: 400 11.5px var(--sans); color: var(--muted); font-style: normal; }
   @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } .pair { flex-direction: column; text-align: center; } }
 </style>

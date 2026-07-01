@@ -1,5 +1,6 @@
 <script>
   import { hub, undoTx } from "../lib/hub.svelte.js";
+  import { explainTx } from "../lib/pilemap.js";
 
   function time(ts) {
     try { return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
@@ -33,6 +34,13 @@
               <span class="t mono">{time(tx.ts)}</span>
               {#if tx.transcript}<span class="tr">"{tx.transcript}"</span>{/if}
             </div>
+            {#if tx.status === "committed"}
+              {@const ex = explainTx(tx, hub.mode)}
+              <div class="line3">
+                <span class="pat mono">{ex.pattern}</span>
+                <span class="why">{ex.line}</span>
+              </div>
+            {/if}
           </div>
           <div class="act">
             {#if tx.status === "committed"}
@@ -69,6 +77,10 @@
   .badge.kill { color: var(--muted); background: var(--line); }
   .line2 { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 11.5px; color: var(--muted); }
   .cat { color: var(--ochre); font-weight: 600; }
+  .line3 { display: flex; align-items: baseline; gap: 8px; margin-top: 5px; min-width: 0; }
+  .pat { flex: none; font-size: 9px; letter-spacing: 0.04em; color: var(--ochre); background: rgba(154, 125, 79, 0.12);
+    border: 1px solid rgba(194, 168, 120, 0.4); padding: 2px 7px; border-radius: 99px; }
+  .why { font-size: 11.5px; line-height: 1.35; color: var(--muted); }
   .tr { font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40ch; }
   .act button { font: 600 12px var(--sans); color: var(--muted); background: none; border: 1px solid var(--line);
     padding: 6px 12px; border-radius: 9px; }
