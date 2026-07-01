@@ -46,6 +46,17 @@ beforeAll(async () => {
 afterAll(async () => { child?.kill("SIGKILL"); await fs.rm(DATA, { recursive: true, force: true }); });
 
 describe("real-time: submit voice note → auto-commit → transaction → undo", () => {
+  it("session never hands the desktop a bare loopback join link — the phone can't reach localhost", async () => {
+    const desktop = connect(); await open(desktop);
+    send(desktop, { t: "hello", role: "desktop" });
+    const sess = await waitFor(desktop, "session");
+    // lanUrl must be present and point at a real interface, not the loopback —
+    // this is what the client uses instead of its own (often "localhost") origin.
+    expect(sess.lanUrl).toBeTruthy();
+    expect(sess.lanUrl).not.toMatch(/localhost|127\.0\.0\.1/);
+    desktop.close();
+  });
+
   it("a keep note files the item and records a committed transaction", async () => {
     const desktop = connect(); await open(desktop);
     send(desktop, { t: "hello", role: "desktop" });

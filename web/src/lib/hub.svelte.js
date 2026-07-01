@@ -39,7 +39,9 @@ function handle(m) {
   switch (m.t) {
     case "session":
       hub.token = m.token;
-      hub.joinUrl = `${location.origin}/?join=${m.token}`;
+      // Prefer the hub's own LAN-reachable address over location.origin — the
+      // desktop is very often opened at "localhost", which a phone can't reach.
+      hub.joinUrl = `${m.lanUrl || location.origin}/?join=${m.token}`;
       break;
     case "joined":
       hub.token = m.token;

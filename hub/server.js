@@ -102,7 +102,10 @@ wss.on("connection", (ws) => {
         const s = { token, host: ws, phone: null, mode: "paper" };
         sessions.set(token, s);
         ws.session = s; ws.role = "desktop";
-        send(ws, { t: "session", token });
+        // lanUrl: the address a phone on the same wifi can actually reach —
+        // never trust the desktop browser's own location.origin for this,
+        // it's "localhost" whenever the desktop was opened locally.
+        send(ws, { t: "session", token, lanUrl: LAN_URL });
         // hand the desktop the whole ledger so the log is populated on arrival
         send(ws, { t: "transactions", rows: db.list(100), summary: db.summary() });
         presence(s);
@@ -194,18 +197,25 @@ wss.on("connection", (ws) => {
   });
 });
 
+// Real wifi/ethernet interfaces first (en0 etc.); VPN/tunnel interfaces
+// (utun, ppp, tap — e.g. a lingering VPN tunnel) sort last since their
+// address usually isn't reachable from a phone on the same wifi.
 function lanIPs() {
-  const out = [];
-  for (const list of Object.values(os.networkInterfaces())) {
+  const named = [];
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
     for (const ni of list || []) {
-      if (ni.family === "IPv4" && !ni.internal) out.push(ni.address);
+      if (ni.family === "IPv4" && !ni.internal) named.push({ name, address: ni.address });
     }
   }
-  return out;
+  const isTunnel = (n) => /^(utun|ppp|tap|tun|awdl|llw)/.test(n);
+  named.sort((a, b) => isTunnel(a.name) - isTunnel(b.name));
+  return named.map((n) => n.address);
 }
+const LAN_IPS = lanIPs();
+const LAN_URL = LAN_IPS.length ? `${scheme}://${LAN_IPS[0]}:${PORT}` : null;
 
 server.listen(PORT, "0.0.0.0", () => {
-  const ips = lanIPs();
+  const ips = LAN_IPS;
   console.log(`\n  Pile Patrol hub — ${scheme.toUpperCase()} on :${PORT}`);
   console.log(`  desktop (this Mac):  ${scheme}://localhost:${PORT}/`);
   for (const ip of ips) console.log(`  phone (same wifi):   ${scheme}://${ip}:${PORT}/`);

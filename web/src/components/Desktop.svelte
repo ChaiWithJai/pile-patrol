@@ -10,6 +10,7 @@
     if (hub.joinUrl) QRCode.toDataURL(hub.joinUrl, { margin: 1, width: 220, color: { dark: "#3f4234", light: "#f6f3e8" } }).then((u) => (qrDataUrl = u));
   });
 
+  const noLan = $derived(hub.joinUrl && /\/\/(localhost|127\.0\.0\.1)[:/]/.test(hub.joinUrl));
   const cats = $derived(categoriesFor(hub.mode));
   const pats = $derived(patternStats(hub.transactions, hub.mode));
   const words = $derived(hub.mode === "move"
@@ -36,6 +37,7 @@
         <h2>Scan to pair your phone</h2>
         <p>Open the camera on your iPhone and point it at this code. Both devices stay on your wifi — nothing leaves the house.</p>
         {#if hub.joinUrl}<p class="mono url">{hub.joinUrl}</p>{/if}
+        {#if noLan}<p class="warn">⚠ No wifi/ethernet address found on this Mac — this code points at localhost and your phone can't reach it. Check you're connected to wifi, then reload.</p>{/if}
         <p class="tiny">No phone handy? Open <span class="mono">{location.origin}/?role=phone&amp;synthetic=1</span> in another window.</p>
       </div>
     </section>
@@ -98,6 +100,8 @@
   .pair-copy h2 { font: 500 22px var(--display); margin: 0 0 10px; }
   .pair-copy p { font-size: 14px; line-height: 1.55; color: var(--muted); max-width: 46ch; margin: 0 0 10px; }
   .url { font-size: 12px; color: var(--ochre); word-break: break-all; }
+  .warn { font-size: 12px; line-height: 1.5; color: #9a4f4f; background: rgba(154, 79, 79, 0.1);
+    border: 1px solid rgba(154, 79, 79, 0.3); border-radius: 10px; padding: 8px 11px; margin-top: 10px; max-width: 46ch; }
   .tiny { font-size: 12px; color: var(--muted); opacity: 0.85; }
 
   .controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
