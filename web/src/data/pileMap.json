@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "purpose": "Links a paper-triage destination back to the ADHD pattern underneath it and the matching lesson, so each card can deliver understanding + one adjustment. Seeded from the pattern-map canonical model (patterns.json / lessons.json).",
+    "source": "adhd-pattern-map"
+  },
+  "byCategory": {
+    "admin": {
+      "patternId": "activation-friction",
+      "lessonId": "doing-not-knowing",
+      "note": "Admin piles up where knowing what to do never became doing it. Filing it is the bridge."
+    },
+    "knowledge-creative": {
+      "patternId": "environment-cueing",
+      "lessonId": "interest-fuel",
+      "note": "Ideas on paper are out where you can see them because out-of-sight is out-of-mind. Capture keeps them without the clutter."
+    },
+    "personal": {
+      "patternId": "environment-cueing",
+      "lessonId": "re-narration",
+      "note": "The keepsake matters; the paper doesn't. Back up the meaning, free the surface."
+    }
+  }
+}

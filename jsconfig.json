@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "checkJs": false },
+  "include": ["web/src/**/*", "hub/**/*"]
+}
