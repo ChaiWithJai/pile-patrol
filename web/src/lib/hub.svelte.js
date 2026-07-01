@@ -1,9 +1,8 @@
-// The client half of the LAN link — a thin WebSocket to the Mac hub, with all
-// shared session state in one runes store (like pattern-map's router.svelte.js).
-// The desktop is the host; the phone joins with a token. Triage decisions apply
-// optimistically so the room feels instant; the hub confirms with filed/removed.
-
-import { emptyLedger, ledgerReduce, resolveInQueue } from "./triage.js";
+// The client half of the LAN link — a thin WebSocket to the Mac hub, all shared
+// state in one runes store. Real-time flow: the phone streams frames for live
+// identification and submits an item + voice note; the hub auto-commits and
+// records a transaction; both devices see the ledger update. The desktop is the
+// live transaction log; the phone gets a receipt it can undo.
 
 export const hub = $state({
   role: null,
@@ -12,14 +11,12 @@ export const hub = $state({
   joinUrl: "",
   presence: { desktop: false, phone: false },
   mode: "paper",
-  queue: [],
-  focus: null,
-  ledger: emptyLedger(),
-  filed: {}, // id -> backupRef
+  transactions: [], // desktop: rows (newest first), each may carry a _thumb
+  summary: { kept: 0, killed: 0, byCategory: {} },
+  identified: [], // phone: live overlay labels
+  engine: "",
+  receipt: null, // phone: last committed receipt
   error: "",
-  captureCount: 0,
-  heard: "", // last voice transcript, offered to the focused card as a hint
-  listening: false,
 });
 
 let ws = null;
@@ -32,10 +29,7 @@ function wsUrl() {
 export function connect(role, token) {
   hub.role = role;
   ws = new WebSocket(wsUrl());
-  ws.onopen = () => {
-    hub.connected = true;
-    ws.send(JSON.stringify({ t: "hello", role, token }));
-  };
+  ws.onopen = () => { hub.connected = true; ws.send(JSON.stringify({ t: "hello", role, token })); };
   ws.onclose = () => { hub.connected = false; };
   ws.onerror = () => { hub.error = "connection lost — check you're on the same wifi"; };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
@@ -49,22 +43,35 @@ function handle(m) {
       break;
     case "joined":
       hub.token = m.token;
+      if (m.mode) hub.mode = m.mode;
       break;
     case "presence":
       hub.presence = { desktop: m.desktop, phone: m.phone };
       break;
-    case "item":
-      hub.queue = [...hub.queue, m.item];
-      if (!hub.focus) hub.focus = m.item;
+    case "mode":
+      hub.mode = m.mode;
       break;
-    case "filed":
-      hub.filed = { ...hub.filed, [m.id]: m.backupRef };
+    case "transactions":
+      hub.transactions = m.rows ?? [];
+      if (m.summary) hub.summary = m.summary;
       break;
-    case "removed":
-      // hub confirmation; queue already resolved optimistically
+    case "committed": {
+      const tx = { ...m.tx, _thumb: m.thumb ?? null };
+      hub.transactions = [tx, ...hub.transactions];
+      if (m.summary) hub.summary = m.summary;
       break;
-    case "ack":
-      hub.captureCount += 1;
+    }
+    case "undone":
+      hub.transactions = hub.transactions.map((t) =>
+        t.id === m.id ? { ...t, status: "undone" } : t);
+      if (m.summary) hub.summary = m.summary;
+      break;
+    case "receipt":
+      hub.receipt = m.tx;
+      break;
+    case "identified":
+      hub.identified = m.labels ?? [];
+      hub.engine = m.engine ?? "";
       break;
     case "error":
       hub.error = m.message;
@@ -72,26 +79,16 @@ function handle(m) {
   }
 }
 
-// ---- phone ----
-export function sendCapture(item) {
-  hub.error = "";
-  ws?.send(JSON.stringify({ t: "capture", item }));
-}
+const sendMsg = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
 
 // ---- desktop ----
-export function setMode(mode) { hub.mode = mode; }
+export function setMode(mode) { hub.mode = mode; sendMsg({ t: "mode", mode }); }
+export function undoTx(id) { sendMsg({ t: "undo", id }); }
 
-export function decide(id, action, fields = {}) {
-  const item = hub.queue.find((it) => it.id === id);
-  if (!item) return;
-  // optimistic: ledger + queue update immediately
-  hub.ledger = ledgerReduce(hub.ledger, {
-    action,
-    category: fields.category,
-    backedUp: action === "keep",
-  });
-  const r = resolveInQueue(hub.queue, id);
-  hub.queue = r.queue;
-  hub.focus = r.focus;
-  ws?.send(JSON.stringify({ t: "decision", id, action, mode: hub.mode, ...fields }));
+// ---- phone ----
+export function streamFrame(frame) { sendMsg({ t: "identify", frame }); }
+export function submitItem(item) {
+  hub.error = "";
+  sendMsg({ t: "submit", ...item });
 }
+export function clearReceipt() { hub.receipt = null; }

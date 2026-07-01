@@ -38,14 +38,14 @@ describe("writeKeep", () => {
   it("writes the image + a sidecar carrying the label and ocr text", async () => {
     const res = await writeKeep(tmp, {
       id: "xyz789", mode: "paper", category: "admin", label: "Tax notice",
-      ocrText: "Property tax due", reason: "Reads like admin.",
+      transcript: "Property tax due", reason: "Reads like admin.",
       capturedAt: "2026-07-01T14:03:09.123Z", dataUrl: PNG,
     });
     const img = await fs.readFile(res.imageFile);
     expect(img.length).toBeGreaterThan(0);
     const sidecar = JSON.parse(await fs.readFile(res.sidecarFile, "utf8"));
     expect(sidecar.label).toBe("Tax notice");
-    expect(sidecar.ocrText).toBe("Property tax due");
+    expect(sidecar.transcript).toBe("Property tax due");
     expect(sidecar.category).toBe("admin");
     expect(res.backupRef).toMatch(/^2026-07-01T14-03-09_xyz789$/);
   });

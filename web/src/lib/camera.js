@@ -81,6 +81,17 @@ export function grabFrame(videoEl) {
   return { dataUrl: c.toDataURL("image/jpeg", 0.72), w, h };
 }
 
+// A small, cheap frame for the live identify stream (keeps WS traffic light).
+export function grabThumb(videoEl, maxW = 320) {
+  const vw = videoEl.videoWidth || 720, vh = videoEl.videoHeight || 960;
+  const scale = Math.min(1, maxW / vw);
+  const w = Math.round(vw * scale), h = Math.round(vh * scale);
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(videoEl, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.5);
+}
+
 export function makeId() {
   return (crypto.randomUUID?.() || Math.random().toString(36).slice(2)).replace(/-/g, "").slice(0, 8);
 }

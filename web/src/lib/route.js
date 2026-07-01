@@ -99,3 +99,28 @@ export function classify(text, mode = "paper", { override } = {}) {
     source: "keyword",
   };
 }
+
+// Voice notes carry an ACTION as well as a destination. "throw this away" is a
+// kill; anything else defaults to keep-and-file. Kept deliberately literal — the
+// native model refines it behind the same shape later.
+const KILL_WORDS = ["trash", "toss", "throw away", "throw it away", "throw this away",
+  "chuck", "shred", "junk", "recycle", "get rid", "bin it", "bin this", "discard", "don't need", "do not need"];
+
+export function intent(text) {
+  const t = CLEAN(text);
+  return KILL_WORDS.some((w) => t.includes(w)) ? "kill" : "keep";
+}
+
+// Turn a spoken note into a full proposed action: what to do + where + a label.
+export function parseVoice(text, mode = "paper") {
+  const action = intent(text);
+  const c = classify(text, mode);
+  return {
+    action,
+    category: c.category,
+    label: c.label,
+    reason: action === "kill" ? "Heard 'toss it' — binning, nothing to file." : c.reason,
+    confidence: c.confidence,
+    transcript: String(text ?? ""),
+  };
+}

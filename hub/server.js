@@ -17,13 +17,20 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { writeKeep } from "./store.js";
+import { writeKeep, deleteFiles } from "./store.js";
+import { identify } from "./identify.js";
+import { createStore } from "./db.js";
+import { parseVoice } from "../web/src/lib/route.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "web", "dist");
 const DATA_ROOT = process.env.PILE_DATA || path.join(os.homedir(), "PilePatrol-data");
 const PORT = Number(process.env.PORT || 8443);
+
+// The transaction ledger lives on disk next to the filed items.
+fss.mkdirSync(DATA_ROOT, { recursive: true });
+const db = createStore(path.join(DATA_ROOT, "pilepatrol.db"));
 
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
@@ -63,7 +70,8 @@ function handleRequest(req, res) {
 function makeServer() {
   const cert = path.join(ROOT, "certs", "cert.pem");
   const key = path.join(ROOT, "certs", "key.pem");
-  if (fss.existsSync(cert) && fss.existsSync(key)) {
+  // PILE_HTTP=1 forces plain HTTP (tests, or a localhost-only run) even when certs exist.
+  if (process.env.PILE_HTTP !== "1" && fss.existsSync(cert) && fss.existsSync(key)) {
     const opts = { cert: fss.readFileSync(cert), key: fss.readFileSync(key) };
     return { server: https.createServer(opts, handleRequest), scheme: "https" };
   }
@@ -73,10 +81,11 @@ function makeServer() {
 // ---- sessions: token -> { host, phone, items } ----
 const sessions = new Map();
 const send = (ws, msg) => { try { ws?.readyState === 1 && ws.send(JSON.stringify(msg)); } catch {} };
+const broadcast = (s, msg) => { send(s.host, msg); send(s.phone, msg); };
 function presence(s) {
-  const p = { t: "presence", desktop: !!s.host, phone: !!s.phone };
-  send(s.host, p); send(s.phone, p);
+  broadcast(s, { t: "presence", desktop: !!s.host, phone: !!s.phone });
 }
+const sidecarOf = (imageFile) => (imageFile ? imageFile.replace(/\.[^.]+$/, ".json") : null);
 
 const { server, scheme } = makeServer();
 const wss = new WebSocketServer({ server, path: "/ws" });
@@ -90,10 +99,12 @@ wss.on("connection", (ws) => {
     if (m.t === "hello") {
       if (m.role === "desktop") {
         const token = crypto.randomBytes(4).toString("hex");
-        const s = { token, host: ws, phone: null, items: new Map() };
+        const s = { token, host: ws, phone: null, mode: "paper" };
         sessions.set(token, s);
         ws.session = s; ws.role = "desktop";
         send(ws, { t: "session", token });
+        // hand the desktop the whole ledger so the log is populated on arrival
+        send(ws, { t: "transactions", rows: db.list(100), summary: db.summary() });
         presence(s);
       } else if (m.role === "phone") {
         // Join by token (scanned QR). As a same-Mac demo convenience, a tokenless
@@ -101,8 +112,7 @@ wss.on("connection", (ws) => {
         let s = m.token ? sessions.get(m.token) : (sessions.size === 1 ? [...sessions.values()][0] : null);
         if (!s) { send(ws, { t: "error", message: "session not found — re-scan the code" }); return; }
         s.phone = ws; ws.session = s; ws.role = "phone";
-        send(ws, { t: "joined", token: s.token });
-        // replay any items captured before the phone (re)connected is not needed;
+        send(ws, { t: "joined", token: s.token, mode: s.mode });
         presence(s);
       }
       return;
@@ -111,36 +121,67 @@ wss.on("connection", (ws) => {
     const s = ws.session;
     if (!s) return;
 
-    if (m.t === "capture" && ws.role === "phone") {
-      const item = { ...m.item, capturedAt: m.item.capturedAt || new Date().toISOString() };
-      s.items.set(item.id, item);
-      send(s.host, { t: "item", item });   // desktop shows it in the queue
-      send(ws, { t: "ack", id: item.id }); // phone confirms sent
+    // Desktop sets the active mode (paper | move); phone submissions use it.
+    if (m.t === "mode" && ws.role === "desktop") {
+      s.mode = m.mode || "paper";
+      broadcast(s, { t: "mode", mode: s.mode });
       return;
     }
 
-    if (m.t === "decision" && ws.role === "desktop") {
-      const item = s.items.get(m.id);
-      if (!item) { send(ws, { t: "error", message: "unknown item " + m.id }); return; }
-      if (m.action === "kill") {
-        s.items.delete(m.id);
-        send(s.host, { t: "removed", id: m.id });
-        send(s.phone, { t: "removed", id: m.id });
-        return;
-      }
-      // keep → write to disk under the data root (the backup target)
+    // Live identification: phone streams frames, gets back overlay labels.
+    if (m.t === "identify" && ws.role === "phone") {
+      const r = await identify(m.frame);
+      send(ws, { t: "identified", labels: r.labels, engine: r.engine });
+      return;
+    }
+
+    // The heart of the real-time flow: phone submits an item + voice note; the
+    // hub processes the note, auto-commits (keep files it / kill discards), and
+    // records a transaction. Confirmation is the receipt + the ledger row.
+    if (m.t === "submit" && ws.role === "phone") {
+      const transcript = (m.transcript || "").trim();
+      const parsed = parseVoice(transcript, s.mode);
+      const action = m.action || parsed.action; // manual button overrides voice
+      const capturedAt = m.capturedAt || new Date().toISOString();
       try {
-        const ref = await writeKeep(DATA_ROOT, {
-          id: item.id, dataUrl: item.dataUrl, capturedAt: item.capturedAt,
-          mode: m.mode || "paper", category: m.category, label: m.label,
-          ocrText: m.ocrText, reason: m.reason, filedAt: new Date().toISOString(),
-        });
-        s.items.delete(m.id);
-        const filed = { t: "filed", id: m.id, backupRef: ref.backupRef, dir: ref.dir };
-        send(s.host, filed); send(s.phone, filed);
+        if (action === "kill") {
+          const tx = db.insert({
+            id: m.id, ts: capturedAt, kind: "kill",
+            source: transcript ? "voice" : "manual",
+            label: parsed.label, transcript,
+          });
+          broadcast(s, { t: "committed", tx, thumb: m.dataUrl, summary: db.summary() });
+          send(ws, { t: "receipt", tx });
+        } else {
+          const category = m.category || parsed.category;
+          const label = m.label || parsed.label;
+          const ref = await writeKeep(DATA_ROOT, {
+            id: m.id, dataUrl: m.dataUrl, audioDataUrl: m.audioDataUrl, capturedAt,
+            mode: s.mode, category, label, transcript, reason: parsed.reason,
+            filedAt: new Date().toISOString(),
+          });
+          const tx = db.insert({
+            id: m.id, ts: capturedAt, kind: "keep",
+            source: transcript ? "voice" : "manual",
+            label, category, transcript,
+            image_file: ref.imageFile, audio_file: ref.audioFile, backup_ref: ref.backupRef,
+          });
+          broadcast(s, { t: "committed", tx, thumb: m.dataUrl, summary: db.summary() });
+          send(ws, { t: "receipt", tx });
+        }
       } catch (e) {
-        send(ws, { t: "error", message: "could not file: " + e.message });
+        send(ws, { t: "error", message: "could not process: " + e.message });
       }
+      return;
+    }
+
+    // Undo (from either device): reverse a committed transaction.
+    if (m.t === "undo") {
+      const tx = db.get(m.id);
+      if (!tx || tx.status !== "committed") return;
+      if (tx.kind === "keep") await deleteFiles([tx.image_file, sidecarOf(tx.image_file), tx.audio_file]);
+      db.undo(m.id);
+      broadcast(s, { t: "undone", id: m.id, summary: db.summary() });
       return;
     }
   });
