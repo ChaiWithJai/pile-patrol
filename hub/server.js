@@ -105,7 +105,7 @@ wss.on("connection", (ws) => {
         // lanUrl: the address a phone on the same wifi can actually reach —
         // never trust the desktop browser's own location.origin for this,
         // it's "localhost" whenever the desktop was opened locally.
-        send(ws, { t: "session", token, lanUrl: LAN_URL });
+        send(ws, { t: "session", token, lanUrl: lanUrl() });
         // hand the desktop the whole ledger so the log is populated on arrival
         send(ws, { t: "transactions", rows: db.list(100), summary: db.summary() });
         presence(s);
@@ -211,11 +211,16 @@ function lanIPs() {
   named.sort((a, b) => isTunnel(a.name) - isTunnel(b.name));
   return named.map((n) => n.address);
 }
-const LAN_IPS = lanIPs();
-const LAN_URL = LAN_IPS.length ? `${scheme}://${LAN_IPS[0]}:${PORT}` : null;
+// Computed fresh (not cached) — a Mac can change wifi networks (e.g. switching
+// to a phone's Personal Hotspot to dodge AP client isolation) while the hub
+// keeps running, and a stale cached IP would silently break pairing again.
+function lanUrl() {
+  const ips = lanIPs();
+  return ips.length ? `${scheme}://${ips[0]}:${PORT}` : null;
+}
 
 server.listen(PORT, "0.0.0.0", () => {
-  const ips = LAN_IPS;
+  const ips = lanIPs();
   console.log(`\n  Pile Patrol hub — ${scheme.toUpperCase()} on :${PORT}`);
   console.log(`  desktop (this Mac):  ${scheme}://localhost:${PORT}/`);
   for (const ip of ips) console.log(`  phone (same wifi):   ${scheme}://${ip}:${PORT}/`);
