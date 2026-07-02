@@ -1,9 +1,10 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { hub, streamFrame, submitItem, undoTx, clearReceipt } from "../lib/hub.svelte.js";
-  import { startCamera, grabFrame, grabThumb, makeId, coverMap } from "../lib/camera.js";
+  import { hub, submitItem, undoTx, clearReceipt } from "../lib/hub.svelte.js";
+  import { startCamera, grabFrame, makeId, coverMap } from "../lib/camera.js";
+  import { detectRegions } from "../lib/detect.js";
   import { createListener } from "../lib/voice.js";
-  import { startAudioRecording } from "../lib/recorder.js";
+  import { startAudioRecording, requestMic } from "../lib/recorder.js";
   import { explainTx, DEAL, AFFIRM } from "../lib/pilemap.js";
 
   let video;
@@ -16,39 +17,56 @@
   let recording = $state(false);
   let transcript = $state("");
   let frozen = $state(null);
+  let liveLabels = $state([]); // this tick's detected regions — recomputed from the live frame, never static
 
-  let idTimer, recorder = null, listener = null;
   const params = new URLSearchParams(location.search);
   const synthetic = params.get("synthetic") === "1";
 
-  onMount(async () => {
+  // Every permission this page will ever need is requested exactly once,
+  // here, before the shutter is interactive — never lazily on first press.
+  // A mid-gesture permission sheet steals the touch and silently drops the
+  // recording; asking upfront (behind one deliberate tap) also gives the
+  // OS-level camera-then-mic dialogs a predictable order instead of one
+  // firing on load and the other firing mid-hold, seconds or minutes later.
+  let stage = $state(synthetic ? "starting" : "gate"); // gate | starting | ready
+  let micStream = null;
+  let idTimer, recorder = null, listener = null;
+
+  async function enable() {
+    stage = "starting";
     const res = await startCamera(video, { synthetic });
     source = res.source; fellBack = res.fellBackBecause || "";
     video.addEventListener("loadedmetadata", () => { vidW = video.videoWidth; vidH = video.videoHeight; });
     if (video.videoWidth) { vidW = video.videoWidth; vidH = video.videoHeight; }
-    // Live identification loop — stream a small frame ~1/sec when idle.
+    if (!synthetic) micStream = await requestMic();
+    // Live detection loop — recomputed from the actual current frame each
+    // tick via plain Canvas/ImageData (no server round-trip, no fixed
+    // placeholder — genuinely reactive to whatever's really in view).
     idTimer = setInterval(() => {
-      if (!recording && video?.videoWidth && hub.presence.desktop) streamFrame(grabThumb(video));
-    }, 1000);
-  });
-  onDestroy(() => clearInterval(idTimer));
+      if (!recording && video?.videoWidth) liveLabels = detectRegions(video);
+    }, 800);
+    stage = "ready";
+  }
+
+  onMount(() => { if (synthetic) enable(); });
+  onDestroy(() => { clearInterval(idTimer); micStream?.getTracks().forEach((t) => t.stop()); });
 
   // The JTBD's first beat: camera on → something is detected. Show a visible
   // "looking" state until the first real result lands, then never go back —
   // that's the moment the app proves it's paying attention to the pile.
   let everIdentified = $state(false);
-  $effect(() => { if (hub.identified.length > 0) everIdentified = true; });
+  $effect(() => { if (liveLabels.length > 0) everIdentified = true; });
   const mapped = $derived(
-    hub.identified.map((l) => ({ ...l, rect: coverMap(l.box, vidW, vidH, viewW, viewH) }))
+    liveLabels.map((l) => ({ ...l, rect: coverMap(l.box, vidW, vidH, viewW, viewH) }))
   );
 
-  async function startNote(e) {
+  function startNote(e) {
     e.preventDefault();
-    if (recording) return;
+    if (recording || stage !== "ready") return;
     frozen = grabFrame(video).dataUrl;
     transcript = "";
     recording = true;
-    recorder = await startAudioRecording();
+    recorder = startAudioRecording(micStream);
     listener = createListener({ onTranscript: (t) => (transcript = (transcript ? transcript + " " : "") + t) });
     listener.start();
   }
@@ -64,6 +82,7 @@
 
   // A quick toss without a note.
   function tossNow() {
+    if (stage !== "ready") return;
     const dataUrl = grabFrame(video).dataUrl;
     submitItem({ id: makeId(), dataUrl, action: "kill", transcript: "", capturedAt: new Date().toISOString() });
   }
@@ -88,27 +107,34 @@
     <!-- svelte-ignore a11y_media_has_caption -->
     <video bind:this={video} autoplay playsinline muted></video>
 
-    {#if !recording && !everIdentified && hub.presence.desktop}
-      <div class="scan"><div class="scanline"></div><span>Looking at your pile…</span></div>
+    {#if stage === "gate"}
+      <div class="gate">
+        <p class="gtitle">See the pile, hear you narrate</p>
+        <p class="gcopy">Your camera shows what's in front of you; your mic hears what you say about it. Both stay on this phone until you file something — nothing leaves the house.</p>
+        <button class="genable" onclick={enable}>Enable camera &amp; mic</button>
+      </div>
+    {:else}
+      {#if !recording && !everIdentified}
+        <div class="scan"><div class="scanline"></div><span>Looking at your pile…</span></div>
+      {/if}
+
+      {#if !recording}
+        {#each mapped as l (l.label + l.box.join(","))}
+          <div class="box"
+            style="left:{l.rect[0] * 100}%;top:{l.rect[1] * 100}%;width:{l.rect[2] * 100}%;height:{l.rect[3] * 100}%">
+            <span>{l.label}</span>
+          </div>
+        {/each}
+      {/if}
+
+      {#if frozen}<img class="freeze" src={frozen} alt="captured" />{/if}
+
+      <div class="hud">
+        {#if source === "synthetic"}synthetic pile{:else}live camera{/if}
+        {#if fellBack}· camera {fellBack}{/if}
+      </div>
+      {#if recording}<div class="rec">● recording{transcript ? " · " + transcript : "…"}</div>{/if}
     {/if}
-
-    {#if !recording}
-      {#each mapped as l (l.label)}
-        <div class="box" class:ph={l.placeholder}
-          style="left:{l.rect[0] * 100}%;top:{l.rect[1] * 100}%;width:{l.rect[2] * 100}%;height:{l.rect[3] * 100}%">
-          <span>{l.label}{l.placeholder ? " ?" : ""}</span>
-        </div>
-      {/each}
-    {/if}
-
-    {#if frozen}<img class="freeze" src={frozen} alt="captured" />{/if}
-
-    <div class="hud">
-      {#if source === "synthetic"}synthetic pile{:else}live camera{/if}
-      {#if fellBack}· camera {fellBack}{/if}
-      {#if hub.engine}· id: {hub.engine}{/if}
-    </div>
-    {#if recording}<div class="rec">● recording{transcript ? " · " + transcript : "…"}</div>{/if}
   </div>
 
   <div class="controls">
@@ -122,15 +148,16 @@
       <span class="dealhint">{DEAL.hint}</span>
     </div>
     <p class="help">
-      {#if !hub.presence.desktop}Waiting for the desktop… keep this open.
+      {#if stage !== "ready"}Enable the camera above to start.
+      {:else if !hub.presence.desktop}Waiting for the desktop… keep this open.
       {:else if recording}Say what it is — "file this tax bill" or "toss it". Release to send.
       {:else if dealDone}{DEAL.done}
       {:else if cleared > 0}{affirm} Hold for the next one.
       {:else}Hold to capture + talk. It files itself on your Mac.{/if}
     </p>
     <div class="row">
-      <button class="toss" onclick={tossNow} disabled={!hub.presence.desktop}>Toss</button>
-      <button class="shutter" class:live={recording}
+      <button class="toss" onclick={tossNow} disabled={stage !== "ready" || !hub.presence.desktop}>Toss</button>
+      <button class="shutter" class:live={recording} disabled={stage !== "ready"}
         onpointerdown={startNote} onpointerup={endNote} onpointerleave={endNote}
         aria-label="hold to capture and narrate"></button>
       <span class="spacer"></span>
@@ -155,7 +182,8 @@
      past that edge onto bare html). Scrolls internally on cramped screens
      instead. */
   .phone { max-width: 480px; margin: 0 auto; height: 100dvh; overflow-y: auto; display: flex; flex-direction: column;
-    padding: calc(10px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom)); }
+    padding: calc(10px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+    touch-action: manipulation; }
   .bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 12px; flex: none; }
   .dot { width: 9px; height: 9px; border-radius: 99px; background: var(--line); }
   .dot.on { background: var(--good); box-shadow: 0 0 0 4px rgba(143, 174, 122, 0.25); }
@@ -165,6 +193,12 @@
   .view { position: relative; flex: 1; min-height: 0; border-radius: 24px; overflow: hidden; background: #000; border: 1px solid var(--line); }
   video, .freeze { width: 100%; height: 100%; object-fit: cover; display: block; }
   .freeze { position: absolute; inset: 0; }
+  .gate { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 32px; text-align: center; background: rgba(63, 66, 52, 0.82); backdrop-filter: blur(2px); }
+  .gtitle { font: 500 20px var(--display); color: var(--paper-2); margin: 0; }
+  .gcopy { font-size: 13px; line-height: 1.5; color: rgba(246, 243, 232, 0.78); max-width: 34ch; margin: 0; }
+  .genable { margin-top: 8px; font: 600 14px var(--sans); color: var(--ink); background: var(--paper-2);
+    border: none; padding: 13px 22px; border-radius: 14px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3); }
   .scan { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: center;
     padding-bottom: 18px; pointer-events: none; overflow: hidden; }
   .scan span { font: 600 11px var(--sans); letter-spacing: 0.04em; color: var(--paper-2);
@@ -175,7 +209,6 @@
   @keyframes scan { 0%, 100% { top: 8%; } 50% { top: 88%; } }
   .box { position: absolute; border: 1.5px dashed rgba(246, 243, 232, 0.9); border-radius: 8px;
     transition: left 0.35s ease, top 0.35s ease, width 0.35s ease, height 0.35s ease; }
-  .box.ph { border-style: dotted; opacity: 0.75; }
   .box span { position: absolute; top: -9px; left: -1px; background: var(--ochre); color: var(--paper-2);
     font: 600 9px var(--mono); padding: 2px 5px; border-radius: 3px; }
   .hud { position: absolute; top: 12px; left: 12px; font: 600 10px var(--mono); letter-spacing: 0.05em;
@@ -194,8 +227,15 @@
   .toss, .spacer { width: 72px; }
   .toss { font: 600 13px var(--sans); color: var(--muted); background: var(--paper); border: 1px solid var(--line);
     padding: 10px 0; border-radius: 12px; }
+  .toss:disabled, .shutter:disabled { opacity: 0.4; }
+  /* touch-action:none + the tap-highlight/callout/select resets (also set
+     globally in tokens.css) stop iOS's native long-press behavior — text
+     selection, the magnifier callout, the gray tap-highlight flash — from
+     hijacking a press-and-hold gesture. That flash/selection box was the
+     "janky" shutter button. */
   .shutter { width: 74px; height: 74px; border-radius: 99px; border: 4px solid var(--ochre); background: var(--paper-2);
-    box-shadow: 0 8px 22px rgba(154, 125, 79, 0.3); }
+    box-shadow: 0 8px 22px rgba(154, 125, 79, 0.3); touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   .shutter.live { background: var(--ochre); transform: scale(1.06); }
   .receipt { position: fixed; bottom: calc(20px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
     display: flex; align-items: center; gap: 14px; background: var(--dark); color: var(--paper-2);

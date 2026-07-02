@@ -37,7 +37,18 @@ body {
   font-family: var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-button { font-family: inherit; cursor: pointer; }
+/* iOS Safari's default tap-highlight (a gray flash box) and long-press
+   callout/text-selection are what made buttons feel "janky" on a real
+   phone — especially the hold-to-record shutter, where a stray selection
+   or callout can interrupt the gesture entirely. */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
 .kicker {
   font: 700 10px/1 var(--sans);
   letter-spacing: 0.16em;

@@ -106,10 +106,71 @@ until the first identify response ever lands), `coverMap`-corrected box
 placement, and a `transition: left/top/width/height 0.35s ease` on `.box` so
 position updates animate instead of jumping.
 
-## 5. What's still open
+## 5. Round two — permissions, reactivity, and button jank (2026-07-02)
 
-Real on-device detection (Apple Vision) is the next real lift, and it's a
-model-integration task, not an interaction one — the seam (`identify()` in
-`hub/identify.js`) is already shaped for it. Nothing in this pass should
-need to change when that lands; `coverMap` and the scanning-state logic are
-detection-engine-agnostic.
+Direction changed: no native Apple Vision helper. Detection stays entirely
+in the browser, using standard Web Platform APIs (MDN: MediaDevices,
+HTMLVideoElement, Canvas 2D, ImageData) — no server round-trip, no ML model.
+
+**Annotations were never reactive.** The server's `identify()` was a static
+placeholder — same two boxes, same labels, every single call, regardless of
+what was actually in frame. Even with the cover-crop math fixed (round one),
+the boxes themselves never changed. Replaced with `web/src/lib/detect.js`:
+a dependency-free local-contrast blob detector (downscale the frame to a
+small grid via Canvas, score each cell against its neighbors, flood-fill
+adjacent high-score cells into boxes). It's a region-of-interest proposal,
+not object recognition — labels stay honest (`item`, `flat item`, `tall
+item`) rather than claiming to know what something is. Because it runs
+against the *actual current frame* every 800ms, it's genuinely reactive: a
+different pile produces different boxes, a blank/flat surface produces none
+(never invents an object). The algorithmic core (`regionsFromGrid`) is
+factored out from the DOM-touching wrapper so it's unit-testable in plain
+Node — 5 tests cover no-false-positives, real contrast detection, reacting
+differently to different frames, the maxBoxes cap, and label heuristics.
+The server-side `identify()`/`streamFrame()` WS path is left in place but
+unused by the phone now (harmless, could still serve a future desktop view).
+
+**The shutter button didn't encapsulate its own job.** Camera permission
+fired silently on page load; microphone permission fired *lazily, mid-hold*
+on the very first shutter press — the OS permission sheet steals the touch,
+the held-down gesture effectively ends, nothing records, and the user has no
+idea why. This is "the button is busy asking for permissions instead of
+doing its job" and "the Apple notification sequence is off," both literally:
+one dialog on load, a second unrelated one buried inside a gesture seconds
+or minutes later. Fixed with an explicit, calm "Enable camera & mic" gate
+screen shown before the viewfinder — one deliberate tap requests camera
+*then* mic together, in that order, every time, and the persisted mic
+`MediaStream` is reused for every subsequent recording (no repeat prompts).
+The shutter and Toss button are inert until both are resolved, so by the
+time they're tappable, zero permission prompts can ever interrupt a hold.
+(The synthetic/no-phone demo mode skips the gate entirely — there's no real
+permission to negotiate for a canvas-drawn fake pile.)
+
+Building this surfaced a real robustness bug: `requestMic()`'s
+`getUserMedia` call had no timeout, so a dismissed/ignored/never-answered
+mic prompt would hang `enable()` forever — the gate would never resolve to
+"ready," bricking the shutter permanently. `camera.js`'s `startCamera()`
+already solved this exact footgun with a race-against-timeout; `requestMic`
+now does the same (3 unit tests: hang, deny, and the happy path).
+
+**The shutter was janky to tap/hold.** iOS Safari's default tap-highlight
+flash and long-press text-selection/callout can hijack a custom
+press-and-hold gesture. Fixed globally (`-webkit-tap-highlight-color:
+transparent`, `-webkit-touch-callout: none`, `user-select: none` on all
+buttons) and specifically on the shutter (`touch-action: none` so the
+browser's own pan/zoom/long-press handling never competes with the hold
+gesture).
+
+## 6. What's still open
+
+Real on-device object *recognition* (vs. the current region-of-interest
+proposal) would need either a model (native or WASM) or a cloud call — both
+explicitly out of scope for "nothing leaves the house" and for this pass.
+`detect.js`'s output shape matches what a real detector would return, so
+swapping the algorithm later doesn't touch `coverMap`, the scanning-state
+logic, or anything downstream.
+
+Live-camera verification of `coverMap` under a genuinely mismatched aspect
+ratio remains blocked in this automation harness specifically (backgrounded
+Chrome tabs throttle `ResizeObserver`); correctness rests on the unit-tested
+transform, not a live screenshot, same caveat as round one.
