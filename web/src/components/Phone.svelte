@@ -1,12 +1,14 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import { hub, streamFrame, submitItem, undoTx, clearReceipt } from "../lib/hub.svelte.js";
-  import { startCamera, grabFrame, grabThumb, makeId } from "../lib/camera.js";
+  import { startCamera, grabFrame, grabThumb, makeId, coverMap } from "../lib/camera.js";
   import { createListener } from "../lib/voice.js";
   import { startAudioRecording } from "../lib/recorder.js";
   import { explainTx, DEAL, AFFIRM } from "../lib/pilemap.js";
 
   let video;
+  let viewW = $state(0), viewH = $state(0); // rendered viewfinder box — for the cover-crop transform
+  let vidW = $state(0), vidH = $state(0); // the camera's native frame size, known once metadata loads
   let cleared = $state(0); // this session's deal — capped framing, not capped function
   const seen = new Set();
   let source = $state("");
@@ -22,12 +24,23 @@
   onMount(async () => {
     const res = await startCamera(video, { synthetic });
     source = res.source; fellBack = res.fellBackBecause || "";
+    video.addEventListener("loadedmetadata", () => { vidW = video.videoWidth; vidH = video.videoHeight; });
+    if (video.videoWidth) { vidW = video.videoWidth; vidH = video.videoHeight; }
     // Live identification loop — stream a small frame ~1/sec when idle.
     idTimer = setInterval(() => {
       if (!recording && video?.videoWidth && hub.presence.desktop) streamFrame(grabThumb(video));
     }, 1000);
   });
   onDestroy(() => clearInterval(idTimer));
+
+  // The JTBD's first beat: camera on → something is detected. Show a visible
+  // "looking" state until the first real result lands, then never go back —
+  // that's the moment the app proves it's paying attention to the pile.
+  let everIdentified = $state(false);
+  $effect(() => { if (hub.identified.length > 0) everIdentified = true; });
+  const mapped = $derived(
+    hub.identified.map((l) => ({ ...l, rect: coverMap(l.box, vidW, vidH, viewW, viewH) }))
+  );
 
   async function startNote(e) {
     e.preventDefault();
@@ -71,14 +84,18 @@
     <span class="dot" class:on={hub.presence.desktop}></span>
   </div>
 
-  <div class="view">
+  <div class="view" bind:clientWidth={viewW} bind:clientHeight={viewH}>
     <!-- svelte-ignore a11y_media_has_caption -->
     <video bind:this={video} autoplay playsinline muted></video>
 
+    {#if !recording && !everIdentified && hub.presence.desktop}
+      <div class="scan"><div class="scanline"></div><span>Looking at your pile…</span></div>
+    {/if}
+
     {#if !recording}
-      {#each hub.identified as l}
+      {#each mapped as l (l.label)}
         <div class="box" class:ph={l.placeholder}
-          style="left:{l.box[0] * 100}%;top:{l.box[1] * 100}%;width:{l.box[2] * 100}%;height:{l.box[3] * 100}%">
+          style="left:{l.rect[0] * 100}%;top:{l.rect[1] * 100}%;width:{l.rect[2] * 100}%;height:{l.rect[3] * 100}%">
           <span>{l.label}{l.placeholder ? " ?" : ""}</span>
         </div>
       {/each}
@@ -132,15 +149,32 @@
 </div>
 
 <style>
-  .phone { max-width: 480px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column;
+  /* height (not min-height) + overflow-y:auto: content can never bleed past
+     one viewport and expose the unstyled page beneath it (the black-padding
+     bug — body is capped at height:100% while overflowing children painted
+     past that edge onto bare html). Scrolls internally on cramped screens
+     instead. */
+  .phone { max-width: 480px; margin: 0 auto; height: 100dvh; overflow-y: auto; display: flex; flex-direction: column;
     padding: calc(10px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom)); }
-  .bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 12px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 12px; flex: none; }
   .dot { width: 9px; height: 9px; border-radius: 99px; background: var(--line); }
   .dot.on { background: var(--good); box-shadow: 0 0 0 4px rgba(143, 174, 122, 0.25); }
-  .view { position: relative; flex: 1; border-radius: 24px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+  /* min-height:0 lets a flex child actually shrink to the space left over —
+     without it a video-bearing box can refuse to shrink below its intrinsic
+     content size and push the whole page taller than the viewport. */
+  .view { position: relative; flex: 1; min-height: 0; border-radius: 24px; overflow: hidden; background: #000; border: 1px solid var(--line); }
   video, .freeze { width: 100%; height: 100%; object-fit: cover; display: block; }
   .freeze { position: absolute; inset: 0; }
-  .box { position: absolute; border: 1.5px dashed rgba(246, 243, 232, 0.9); border-radius: 8px; }
+  .scan { position: absolute; inset: 0; display: flex; align-items: flex-end; justify-content: center;
+    padding-bottom: 18px; pointer-events: none; overflow: hidden; }
+  .scan span { font: 600 11px var(--sans); letter-spacing: 0.04em; color: var(--paper-2);
+    background: rgba(63, 66, 52, 0.6); padding: 5px 11px; border-radius: 99px; }
+  .scanline { position: absolute; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(194, 168, 120, 0.9), transparent);
+    animation: scan 2.4s ease-in-out infinite; }
+  @keyframes scan { 0%, 100% { top: 8%; } 50% { top: 88%; } }
+  .box { position: absolute; border: 1.5px dashed rgba(246, 243, 232, 0.9); border-radius: 8px;
+    transition: left 0.35s ease, top 0.35s ease, width 0.35s ease, height 0.35s ease; }
   .box.ph { border-style: dotted; opacity: 0.75; }
   .box span { position: absolute; top: -9px; left: -1px; background: var(--ochre); color: var(--paper-2);
     font: 600 9px var(--mono); padding: 2px 5px; border-radius: 3px; }

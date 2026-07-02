@@ -92,6 +92,24 @@ export function grabThumb(videoEl, maxW = 320) {
   return c.toDataURL("image/jpeg", 0.5);
 }
 
+// object-fit:cover scales the source frame up until it fully fills the
+// container, cropping whichever axis overflows. A normalized box computed
+// against the RAW source frame (0..1 of srcW×srcH) lands in the wrong place
+// once rendered unless that crop is undone — this is the fix for boxes that
+// drift off their real target whenever the camera's aspect ratio doesn't
+// match the on-screen viewfinder (true on virtually every real phone).
+export function coverMap([bx, by, bw, bh], srcW, srcH, dstW, dstH) {
+  if (!srcW || !srcH || !dstW || !dstH) return [bx, by, bw, bh];
+  const scale = Math.max(dstW / srcW, dstH / srcH);
+  const cropX = (srcW * scale - dstW) / 2;
+  const cropY = (srcH * scale - dstH) / 2;
+  const x = (bx * srcW * scale - cropX) / dstW;
+  const y = (by * srcH * scale - cropY) / dstH;
+  const w = (bw * srcW * scale) / dstW;
+  const h = (bh * srcH * scale) / dstH;
+  return [x, y, w, h];
+}
+
 export function makeId() {
   return (crypto.randomUUID?.() || Math.random().toString(36).slice(2)).replace(/-/g, "").slice(0, 8);
 }

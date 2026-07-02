@@ -22,7 +22,11 @@
 }
 
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; }
+/* html gets the same background as body: if any child ever renders taller
+   than the viewport (overflow, a dvh miscalculation, iOS rubber-banding),
+   the exposed area beneath is the paper tone, never a bare-default black. */
+html, body, #app { margin: 0; height: 100%; }
+html { background: var(--bg); }
 body {
   background: var(--bg);
   background-image:
